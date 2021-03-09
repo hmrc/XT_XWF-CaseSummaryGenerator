@@ -1,4 +1,4 @@
-library xtxwfcasesummarygenerator;
+library XT_XWF_CaseSummaryGenerator;
 {
 # XT_XWF-CaseSummaryGenerator (An X-Tension to Generate Summary Information)
 
@@ -6,8 +6,7 @@ library xtxwfcasesummarygenerator;
   This X-Tension is designed for use only with X-Ways Forensics
   This X-Tension is designed for use only with v18.9 or later (due to file category lookup).
   This X-Tension is not designed for use on Linux or OSX platforms.
-  There is a compiled 32 and 64 bit version of the X-Tension to be used with the
-  corresponding version of X-Ways Forensics.
+  The X-Tension is 64-bit but a 32-bit DLL can be compiled on request
 
 ###  *** Usage Disclaimer ***
   This X-Tension is a Proof-Of-Concept Alpha level prototype, and is not finished.
@@ -36,7 +35,7 @@ library xtxwfcasesummarygenerator;
   Current benchmarks have seen test cases with 1 million items reported in 8 seconds.
 
 ###  TODOs
-   // TODO Ted Smith : Finish and refine user manual
+  Ted Smith : Finish and refine user manual
 
   *** License ***
   This code is open source software licensed under the [Apache 2.0 License]("http://www.apache.org/licenses/LICENSE-2.0.html")
@@ -52,7 +51,9 @@ library xtxwfcasesummarygenerator;
 {$mode Delphi}{$H+}  // this compiler directive ensures strings are not truncated at 255
 
 uses
-  Classes, XT_API, windows, sysutils, contnrs, md5;
+  Classes, XT_API, windows, sysutils, contnrs, md5,
+  // Requires the LazUtils package for the following two units:
+  LazUTF8, lazutf8classes;
 
 // This particular type declaration is used by the hashlist only
 type
@@ -66,66 +67,32 @@ type
     BufEvdNameLen=256;
 var
   // These are global vars
+
   MainWnd                  : THandle;
   CurrentVolume            : THandle;
   slCaseTypesSummary       : TStringList;
   slJustTheFileCategories  : TStringList;
   HashList                 : TFPHashList;
-  TotalDataInBytes         : Int64;
-  itemcount                : integer;
-  ItemsReported            : Integer;
-  deleteditemcount         : integer;
-  FolderCount              : integer;
-  infoflag_Error           : integer;
-  infoflag_NotVerified     : integer;
-  infoflag_TooSmall        : integer;
-  infoflag_TotallyUnknown  : integer;
-  infoflag_Confirmed       : integer;
-  infoflag_NotConfirmed    : integer;
-  infoflag_NewlyIdentified : integer;
-  infoflag_MisMatch        : integer;
-
+  TotalDataInBytes         : Int64 = Default(Int64);
+  itemcount                : integer = Default(integer);
+  ItemsReported            : integer = Default(integer);
+  deleteditemcount         : integer = Default(integer);
+  FolderCount              : integer = Default(integer);
+  infoflag_Error           : integer = Default(integer);
+  infoflag_NotVerified     : integer = Default(integer);
+  infoflag_TooSmall        : integer = Default(integer);
+  infoflag_TotallyUnknown  : integer = Default(integer);
+  infoflag_Confirmed       : integer = Default(integer);
+  infoflag_NotConfirmed    : integer = Default(integer);
+  infoflag_NewlyIdentified : integer = Default(integer);
+  infoflag_MisMatch        : integer = Default(integer);
+  strVersion               : string = Default(string);
+  OutputFolder             : Unicodestring = Default(Unicodestring);
+  OutputFolderIsSpecified  : boolean = Default(Boolean);
   // Evidence name is global for later filesave by name
   pBufEvdName              : array[0..BufEvdNameLen-1] of WideChar;
 
-// The first call needed by the X-Tension API. Must return 1 for the X-Tension to continue.
-function XT_Init(nVersion, nFlags: DWord; hMainWnd: THandle; lpReserved: Pointer): LongInt; stdcall; export;
-begin
-  // Just make sure everything is initialised
-  itemcount                := 0;
-  TotalDataInBytes         := 0;
-  ItemsReported            := 0;
-  deleteditemcount         := 0;
-  FolderCount              := 0;
-  infoflag_Error           := 0;
-  infoflag_NotVerified     := 0;
-  infoflag_TooSmall        := 0;
-  infoflag_TotallyUnknown  := 0;
-  infoflag_Confirmed       := 0;
-  infoflag_NotConfirmed    := 0;
-  infoflag_NewlyIdentified := 0;
-  infoflag_MisMatch        := 0;
-  FillChar(pBufEvdName, SizeOf(pBufEvdName), $00);
-  // Check XWF is ready to go. 1 is normal mode, 2 is thread-safe. Using 1 for now
-  if Assigned(XWF_OutputMessage) then
-  begin
-    Result := 1; // lets go
-    MainWnd:= hMainWnd;
-  end
-  else Result := -1; // stop
-end;
 
-// Used by the button in the X-Tension dialog to tell the user about the X-Tension
-// Must return 0
-function XT_About(hMainWnd : THandle; lpReserved : Pointer) : Longword; stdcall; export;
-begin
-  result := 0;
-  MessageBox(MainWnd,  ' Case Summariser X-Tension for X-Ways Forensics. ' +
-                       ' To be executed only via the RVS dialog of XWF v18.9 or higher. ' +
-                       ' Developed by HMRC, Crown Copyright (c) 2019.' +
-                       ' Intended use : to create HTML report for each evidence object, totalling the number of each file category for the case.'
-                      ,'Case Summariser v0.1 Alpha', MB_ICONINFORMATION);
-end;
 // Returns a human formatted version of the time
 function TimeStampIt(TheDate : TDateTime) : string; stdcall; export;
 begin
@@ -163,6 +130,63 @@ begin
           result := FormatFloat('#.## bytes', bytes) ;
 end;
 
+// GetOutputLocation : Gets the output location; i.e. where to put the container
+// Returns empty string on failure
+function GetOutputLocation() : widestring; stdcall; export;
+const
+  BufLen=2048;
+var
+  Buf, outputmessage : array[0..Buflen-1] of WideChar;
+  UsersSpecifiedPath : array[0..Buflen-1] of WideChar;
+  UserInputResultVal : Int64 = Default(Int64);
+  OutputOK           : Boolean = Default(Boolean);
+begin
+  result              := Default(widestring);
+  outputmessage := '';
+  FillChar(outputmessage, Length(outputmessage), $00);
+  FillChar(UsersSpecifiedPath, Length(UsersSpecifiedPath), $00);
+  FillChar(Buf, Length(Buf), $00);
+
+  // Set default output location
+  UsersSpecifiedPath := 'C:\temp\';
+
+  // Ask XWF to ask the user if s\he wants to override that default location
+  UserInputResultVal := XWF_GetUserInput('Save HTML report to folder...', @UsersSpecifiedPath, Length(UsersSpecifiedPath), $00000002);
+  // If output location exists, use it, otherwise, create it
+  if DirectoryExists(UsersSpecifiedPath) then
+  begin
+    result            := UTF8ToUTF16(IncludeTrailingPathDelimiter(UsersSpecifiedPath));
+    outputmessage     := 'Report will be saved to existing folder : ' + UsersSpecifiedPath;
+    lstrcpyw(Buf, outputmessage);
+    XWF_OutputMessage(@Buf[0], 0);
+  end
+  else
+  begin
+    OutputOK := ForceDirectories(UsersSpecifiedPath);
+    if OutputOK then
+    begin
+      result            := UTF8ToUTF16(IncludeTrailingPathDelimiter(UsersSpecifiedPath));
+      outputmessage     := 'Report will be saved to new folder : ' + UsersSpecifiedPath;
+      lstrcpyw(Buf, outputmessage);
+      XWF_OutputMessage(@Buf[0], 0);
+    end;
+  end;
+end;
+
+// FormatVersionRelease : Converts the "1980" style of version number to "19.8"
+// Returns version as string on success
+function FormatVersionRelease(ver : LongInt) : widestring;
+const
+  RequiredFormat : TFormatSettings = (DecimalSeparator: '.');
+begin
+  // We need to use a divsion to convert "1850" for example to a floating point.
+  // Then we can define the location of the decimal and the digit length of the string
+  // The outcome is "1850" becomes "v18.5"
+  result := '';
+  result := FormatFloat('v##.#', ver/100.0, RequiredFormat);
+end;
+
+
 // Gets the case name, and currently selected evidence object, and the image size
 // and stores as a header for writing to HTML output later
 // Returns true on success. False otherwise.
@@ -172,7 +196,10 @@ const
 var
   Buf            : array[0..BufLen-1] of WideChar;
   pBufCaseName   : array[0..Buflen-1] of WideChar;
-  CaseProperty, EvdSize, intEvdName : Int64;
+  strEvdDescript : array[0..4095] of WideChar;
+  CaseProperty, EvdSize, intEvdName, intEvdDescript : Int64;
+  slEvdDescript : TStringList;
+  i : integer;
 
 begin
   result := false;
@@ -189,6 +216,26 @@ begin
   intEvdName := -1;
   intEvdName := XWF_GetEvObjProp(hEvd, 7, @pBufEvdName[0]);
 
+  // Get the evidence description text. 10 = description.
+  { The numeric INT64 result is the actual
+    pointer address of the pointer within XWFs own memory, where the
+    text we are interested in is currently held. All pointers,
+    whether to text or to other data, are numbers. The trick is therefore
+    simply to choose to interpret that number as the very address where
+    some text can be found. In other words:
+
+    - Request = "I want text so-and-so"
+    - Result x = "pointer address to text"
+    - Cast = "use text at memory address x"
+
+    When text is placed into a buffer, it is literally copied into the buffer
+    supplied. When text is instead returned as a pointer, there is no second
+    copy (though you may create one yourself subsequently) but merely a
+    (numerical) reference to the first. Pointer magic at its best }
+
+  intEvdDescript := -1;
+  intEvdDescript := XWF_GetEvObjProp(hEvd, 10, nil);
+
   try
     // This is the holding store to store every file category for every item
     // This is the list to help create the summary output
@@ -197,9 +244,28 @@ begin
 
     slCaseTypesSummary.Add('<html><head><h2>Report generated: ' + TimeStampIt(Now) + ' </h2></head><body>');
 
-    if CaseProperty > -1 then slCaseTypesSummary.Add('<h3>X-ways Forensics Case Name: '+ pBufCaseName + '</h3>');
-    if intEvdName   > -1 then slCaseTypesSummary.Add('<h3>Evidence Object Name: ' + pBufEvdName + '</h3>');
-    if EvdSize      > -1 then slCaseTypesSummary.Add('<h3>Evidence Object Size: ' + FormatByteSize(EvdSize) + '</h3>');
+    if CaseProperty   > -1 then slCaseTypesSummary.Add('<h3>X-Ways Forensics Case Name: ' + pBufCaseName + '</h3>');
+    if intEvdName     > -1 then slCaseTypesSummary.Add('<h3>Evidence Object Name: '       + pBufEvdName + '</h3>');
+    if EvdSize        > -1 then slCaseTypesSummary.Add('<h3>Evidence Object Size: '       + FormatByteSize(EvdSize) + '</h3>');
+
+    if intEvdDescript > 0 then
+    begin
+      try
+      // The large 'Description' array of widestring chars is added to a stringlist to
+      // divide that into seperate lines, based on #13#10, then an HTML break added
+      // for insertion to the final HTML report
+      strEvdDescript := PWideChar(intEvdDescript);
+      slEvdDescript := TStringList.Create;
+      slEvdDescript.Text := strEvdDescript;
+      slCaseTypesSummary.Add('<h3>Summary of Device: ' + '</h3>');
+      for i := 0 to 9 do
+      begin
+       slCaseTypesSummary.Add(slEvdDescript.Strings[i] + '<br>');
+      end;
+      finally
+         slEvdDescript.free;
+      end;
+    end;
 
     slCaseTypesSummary.Add('<p>The figures below refer to "file items" within this evidential object. ' +
                            'They may represent actual, complete, "files" such as "hello.doc" or they may be parts of a file, ' +
@@ -208,7 +274,7 @@ begin
                            '(e.g "hello.doc from "MyFiles.zip"). The figures are provided only as a means to quantify case volumetrics ' +
                            'and should not be taken as an exacting statement of the "the number of files on the device". ' +
                            'The figures will seldom ever be equal to the exact number of "files" as listed by the operating system ' +
-                           'on the original device and different forensic tools work in different ways. These figures are from X-Ways Forensics </p>');
+                           'on the original device and different forensic tools work in different ways. These figures are from X-Ways Forensics ' + strVersion + ' </p>');
 
     slCaseTypesSummary.Add('<p>Figures include theoretically <strong>legible</strong> undeleted files (illegible undeleted files, excluded). </p>');
 
@@ -220,17 +286,256 @@ begin
   end;
 end;
 
+// Takes the stringlist of file categories and works out how many times each one appears
+// using hashlists. Returns true on success.  False on failure.
+function ComputeMetrics(slFileCategories : TStringList) : boolean; stdcall; export;
+var
+  j, index  : integer;
+  Hash      : ShortString;
+  Data      : PData;
+begin
+  // MD5 is the fastest algorithm and perfectly fine for this task.
+  result := false;
+  for j := 0 to slFileCategories.Count - 1 do
+  begin
+    Hash  := MD5Print(MD5String(slFileCategories.Strings[j]));
+    Index := HashList.FindIndexOf(Hash);
+    if Index = -1 then
+    begin
+      New(Data);
+      Data^.FName  := slFileCategories.Strings[j];
+      Data^.FCount := 1;
+      HashList.Add(Hash, Data);
+    end
+    else
+      Inc(TData(HashList[Index]^).FCount);
+  end;
+  result := true;
+end;
+
+// finish the output and save to the HTML footers. Returns true on success. False otherwise
+function BuildCaseTypeSummary(HL : TFPHashlist) : boolean; stdcall; export;
+const
+  Buflen=256;
+  PostFixFilename = '-CaseSummary.html';
+var
+  k : integer;
+  Buf, outputpathmessage : array[0..Buflen-1] of WideChar;
+begin
+  result       := false;
+
+  for k := 0 to HL.Count - 1 do
+  begin
+    slCaseTypesSummary.Add('<tr><td>'+TData(HL.Items[k]^).FName + '</td><td>    ' + IntToStr(TData(HL.Items[k]^).FCount)+'</td></tr>');
+  end;
+  slCaseTypesSummary.Add('</table>');
+  slCaseTypesSummary.Add('<p>'+ IntToStr(itemcount) + ' items exist in the case overall (including ' + IntToStr(FolderCount) + ' folders). Of those, it was possible to report on '+ IntToStr(ItemsReported) + ' items. ' + IntToStr(itemcount-ItemsReported) + ' illegible, omitted, or zero-byte items were not reported.</p>');
+
+  slCaseTypesSummary.Add('<p>'+ IntToStr(deleteditemcount) + ' items have a deleted status of some kind and may not be legible. </p>');
+
+  slCaseTypesSummary.Add('<p>'+ IntToStr(TotalDataInBytes) + ' total bytes of data comprise the files reported on (' + FormatByteSize(TotalDataInBytes)+ '). This figure can exceed the size of the original evidence ' +
+                         'due to extracted objects, decompression, the inclusion of free space fragments etc. Equally, the figure can be much lower because the figure represents data belonging to file items, not overall disk size which may not all have been allocated to a filesystem.</p>');
+
+  slCaseTypesSummary.Add('<p><strong>Legend</strong> (further information can be found at http://www.x-ways.com/winhex/manual.pdf under section "Type Status" and "Category"):</p>');
+  slCaseTypesSummary.Add('<ul>');
+  slCaseTypesSummary.Add('<li>"Errors" : X-Ways Forensics was unable to process or lookup any information about a file item.</li>');
+  slCaseTypesSummary.Add('<li>"Confirmed" : If the signature matches the extension according to the database, the status is "confirmed". </li>' +
+                         '<li>"Not Confirmed" : If the extension is referenced in the database, yet the signature actually found in the file is unknown, the status is "not confirmed". </li>' +
+                         '<li>"Mismatch Detected" If the signature matches a certain file type in the database, however the extension matches a different file type, the status is "mismatch detected".</li>');
+  slCaseTypesSummary.Add('</ul>');
+  slCaseTypesSummary.Add('<p><table border="1">');
+  slCaseTypesSummary.Add('<tr><td>Errors : </td><td>'              + IntToStr(infoflag_Error)          + '</td></tr>');
+  slCaseTypesSummary.Add('<tr><td>Confirmed : </td><td> '          + IntToStr(infoflag_Confirmed)      + '</td></tr>');
+  slCaseTypesSummary.Add('<tr><td>Not Confirmed : </td><td> '      + IntToStr(infoflag_NotConfirmed)   + '</td></tr>');
+  slCaseTypesSummary.Add('<tr><td>Mismatch detected : </td><td> '  + IntToStr(infoflag_MisMatch)       + '</td></tr>');
+  slCaseTypesSummary.Add('</p></table>');
+  slCaseTypesSummary.Add('</body>');
+
+  lstrcpyw(Buf, 'Saving results and freeing resources...');
+  XWF_OutputMessage(@Buf[0], 0);
+
+  try
+    slCaseTypesSummary.SaveToFile(OutputFolder + pBufEvdName + PostFixFilename);
+    outputpathmessage := 'Result saved to : ' + OutputFolder + pBufEvdName + PostFixFilename;
+    lstrcpyw(Buf, @outputpathmessage);
+    XWF_OutputMessage(@Buf[0], 0);
+  finally
+    result := true;
+  end;
+end;
+// *************************************
+// *** The core XWF "XT" functions start here ***
+// *************************************
+
+// The first call needed by the X-Tension API. Must return 1 for the X-Tension to continue.
+function XT_Init(nVersion, nFlags: DWord; hMainWnd: THandle; lpReserved: Pointer): LongInt; stdcall; export;
+var
+  VerRelease               : LongInt = Default(LongInt);
+  ServiceRelease           : Byte    = Default(Byte);
+begin
+  FillChar(pBufEvdName, SizeOf(pBufEvdName), $00);
+
+  // Get high 2 bytes from nVersion
+  VerRelease := Hi(nVersion);
+  // Get 3rd high byte for service release. We dont need it yet but we might one day
+  ServiceRelease := HiByte(nVersion);
+
+  // If the version of XWF is less than v18.9, abort, because we can't use it.
+  if VerRelease < 1890 then
+  begin
+     MessageBox(MainWnd, 'Error: ' +
+                        ' Please execute this X-Tension using v18.9 or above ',
+                        'Relativity LoadFile Generator', MB_ICONINFORMATION);
+    result := -1;  // Should abort and not run any further
+  end
+  else  // If XWF version is less than v20.0 but greater than 18.9, continue but with an advisory.
+   begin
+    // Check XWF is ready to go. 1 is normal mode, 2 is thread-safe. Using 1 for now
+    if Assigned(XWF_OutputMessage) then
+    begin
+      strVersion := FormatVersionRelease(VerRelease) + ' SR-'+IntToStr(ServiceRelease);
+      Result := 1; // lets go
+      MainWnd:= hMainWnd;
+    end
+    else Result := -1; // stop
+   end;
+end;
+
+
+// Used by the button in the X-Tension dialog to tell the user about the X-Tension
+// Must return 0
+function XT_About(hMainWnd : THandle; lpReserved : Pointer) : Longword; stdcall; export;
+begin
+  result := 0;
+  MessageBox(MainWnd,  ' Case Summariser X-Tension for X-Ways Forensics. ' +
+                       ' To be executed only via the RVS dialog of XWF v18.9 or higher. ' +
+                       ' Developed by HMRC, Crown Copyright (c) 2019-21.' +
+                       ' Intended use : to create HTML report for each evidence object, totalling the number of each file category for the case.'
+                      ,'Case Summariser v1.0 Beta', MB_ICONINFORMATION);
+end;
+
+// called immediately for a volume when volume snapshot refinement or some other action starts
+// This is used for every evidence object selected when executed via RVS and for each item
+// XT_ProcessItem is resulted
+function XT_Prepare(hVolume, hEvidence : THandle; nOpType : DWord; lpReserved : Pointer) : integer; stdcall; export;
+const
+  BufLen=256;
+var
+  outputmessage  : array[0..MAX_PATH] of WideChar;
+  Buf            : array[0..Buflen-1] of WideChar;
+  success        : Boolean = Default(boolean);
+
+begin
+  itemcount                := 0;
+  ItemsReported            := 0;
+  FolderCount              := 0;
+  deleteditemcount         := 0;
+  infoflag_Error           := 0;
+  infoflag_Error           := 0;
+  infoflag_NotVerified     := 0;
+  infoflag_TooSmall        := 0;
+  infoflag_TotallyUnknown  := 0;
+  infoflag_Confirmed       := 0;
+  infoflag_NotConfirmed    := 0;
+  infoflag_NewlyIdentified := 0;
+  infoflag_MisMatch        := 0;
+
+  // Create two global stringlists for holidng the item category values for each item
+  // and then the one to render as HTML containing the summarised results
+  slJustTheFileCategories := TStringList.Create;
+  slCaseTypesSummary      := TStringList.Create;
+  // Nad now create a global hashlist for counting all the occurances of "Pictures", "Internet", etc
+  HashList                := TFPHashlist.Create;
+
+  if nOpType <> 1 then
+  begin
+    MessageBox(MainWnd, 'Advisory: ' +
+                        ' Please execute this X-Tension via the RVS (F10) option only' +
+                        ' and apply it to your selected evidence object(s).'
+                       ,'Case Summariser v1.0 Beta', MB_ICONINFORMATION);
+    // Tell XWF to abort if the user attempts another mode of execution, by returning -3
+    result := -3;
+  end
+  else
+    begin
+      if OutputFolderIsSpecified = false then
+      begin
+        OutputFolder := GetOutputLocation();
+        if DirectoryExists(OutputFolder) then
+        begin
+          OutputFolderIsSpecified := true;
+        end
+        else
+        begin
+          outputmessage := 'Could not create output folder. Aborting execution.';
+          lstrcpyw(Buf, outputmessage);
+          XWF_OutputMessage(@Buf[0], 0);
+          OutputFolderIsSpecified := false;
+        end;
+      end;
+
+      if OutputFolderIsSpecified = true then
+      begin
+
+        // We need our X-Tension to return 0x01, 0x08, 0x10, and 0x20, depending on exactly what we want
+        // We can change the result using or combinations as we need, as follows:
+        // Call XT_ProcessItem for each item in the evidence object : (0x01)  : XT_PREPARE_CALLPI
+        // and to target zero byte files too                        : (0x08)  : XT_PREPARE_TARGETZEROBYTEFILES
+        // and to target folders                                    : (0x10)  : XT_PREPARE_TARGETDIRS
+        // and to target omitted files                              : (0x20)  : XT_PREPARE_DONTOMIT
+        // If we ever want it to run in dumb mode, change result to zero, and uncommented for loop at bottom
+
+        result := XT_PREPARE_CALLPI or XT_PREPARE_TARGETDIRS; // or XT_PREPARE_TARGETZEROBYTEFILES or XT_PREPARE_DONTOMIT;
+
+        // Get the total item count for this particular evidence object, regardless of exclusions
+        itemcount     := XWF_GetItemCount(nil);
+        outputmessage := 'Total item count inc folders : ' + IntToStr(itemcount);
+        lstrcpyw(Buf, outputmessage);
+        XWF_OutputMessage(@Buf[0], 0);
+
+        // Now gather the evidence object metadata and build the headers for the HTML output
+        success := GetEvdData(hEvidence);
+        if success then
+        begin
+          outputmessage := 'Starting analysis of evidence object...';
+          lstrcpyw(Buf, outputmessage);
+          XWF_OutputMessage(@Buf[0], 0);
+        end
+        else
+        begin
+          outputmessage := 'Unable to start analysis of evidence object...ERROR';
+          lstrcpyw(Buf, outputmessage);
+          XWF_OutputMessage(@Buf[0], 0);
+        end;
+        // With the above settings, XWF will intelligently skip certain items due to,
+        // for example, first cluster not known etc. In the future, if we need to
+        // change it to do all items regardless, we can change the result
+        // of this function to 0 and then uncomment the "for loop" code below.
+        // Then XWF will call XT_ProcessItem for every item in the evidence object
+        // even if the file item is total nonsensical data.
+        {
+        for i := 0 to itemcount -1 do
+        begin
+          XT_ProcessItem(i, nil);
+        end;
+        }
+      end; // End of Outfolder valid status check
+    end; // End of nOpType check
+end; // End of XT_Prepare
+
 // Examines each item in the selected evidence object. The "type category" of the item
 // is then added to a string list for traversal later. Must return 0! -1 if fails.
 function XT_ProcessItem(nItemID : LongWord; lpReserved : Pointer) : integer; stdcall; export;
 const
   BufLen=256;
 var
-  ItemSize     : Int64;
-  lpTypeDescr  : array[0..Buflen-1] of WideChar;
-  infoDeletion, infoFolderType    : Int64;
-  itemtypeinfoflag : integer;
-  successDeletionFlags, successFolderFlags : boolean;
+  ItemSize             : Int64;
+  lpTypeDescr          : array[0..Buflen-1] of WideChar;
+  infoDeletion,
+    infoFolderType     : Int64;
+  itemtypeinfoflag     : integer;
+  successDeletionFlags : Boolean = Default(Boolean);
+  successFolderFlags   : Boolean = Default(Boolean);
 
 begin
   ItemSize := -1;
@@ -359,174 +664,6 @@ begin
   result := 0;
 end;
 
-// called immediately for a volume when volume snapshot refinement or some other action starts
-// This is used for every evidence object selected when executed via RVS and for each item
-// XT_ProcessItem is resulted
-function XT_Prepare(hVolume, hEvidence : THandle; nOpType : DWord; lpReserved : Pointer) : integer; stdcall; export;
-const
-  BufLen=256;
-var
-  outputmessage  : array[0..MAX_PATH] of WideChar;
-  Buf            : array[0..Buflen-1] of WideChar;
-  success        : boolean;
-
-begin
-  itemcount                := 0;
-  ItemsReported            := 0;
-  FolderCount              := 0;
-  deleteditemcount         := 0;
-  infoflag_Error           := 0;
-  infoflag_Error           := 0;
-  infoflag_NotVerified     := 0;
-  infoflag_TooSmall        := 0;
-  infoflag_TotallyUnknown  := 0;
-  infoflag_Confirmed       := 0;
-  infoflag_NotConfirmed    := 0;
-  infoflag_NewlyIdentified := 0;
-  infoflag_MisMatch        := 0;
-
-  // Create two global stringlists for holidng the item category values for each item
-  // and then the one to render as HTML containing the summarised results
-  slJustTheFileCategories := TStringList.Create;
-  slCaseTypesSummary      := TStringList.Create;
-  // Nad now create a global hashlist for counting all the occurances of "Pictures", "Internet", etc
-  HashList                := TFPHashlist.Create;
-
-  if nOpType <> 1 then
-  begin
-    MessageBox(MainWnd, 'Advisory: ' +
-                        ' Please execute this X-Tension via the RVS (F10) option only' +
-                        ' and apply it to your selected evidence object(s).'
-                       ,'Case Summariser v1.0 Beta', MB_ICONINFORMATION);
-    // Tell XWF to abort if the user attempts another mode of execution, by returning -3
-    result := -3;
-  end
-  else
-    begin
-      // We need our X-Tension to return 0x01, 0x08, 0x10, and 0x20, depending on exactly what we want
-      // We can change the result using or combinations as we need, as follows:
-      // Call XT_ProcessItem for each item in the evidence object : (0x01)  : XT_PREPARE_CALLPI
-      // and to target zero byte files too                        : (0x08)  : XT_PREPARE_TARGETZEROBYTEFILES
-      // and to target folders                                    : (0x10)  : XT_PREPARE_TARGETDIRS
-      // and to target omitted files                              : (0x20)  : XT_PREPARE_DONTOMIT
-      // If we ever want it to run in dumb mode, change result to zero, and uncommented for loop at bottom
-
-      result := XT_PREPARE_CALLPI or XT_PREPARE_TARGETDIRS; // or XT_PREPARE_TARGETZEROBYTEFILES or XT_PREPARE_DONTOMIT;
-
-      // Get the total item count for this particular evidence object, regardless of exclusions
-      itemcount     := XWF_GetItemCount(nil);
-      outputmessage := 'Total item count inc folders : ' + IntToStr(itemcount);
-      lstrcpyw(Buf, outputmessage);
-      XWF_OutputMessage(@Buf[0], 0);
-
-      // Now gather the evidence object metadata and build the headers for the HTML output
-      success := GetEvdData(hEvidence);
-      if success then
-      begin
-        outputmessage := 'Starting analysis of evidence object...';
-        lstrcpyw(Buf, outputmessage);
-        XWF_OutputMessage(@Buf[0], 0);
-      end
-      else
-      begin
-        outputmessage := 'Unable to start analysis of evidence object...ERROR';
-        lstrcpyw(Buf, outputmessage);
-        XWF_OutputMessage(@Buf[0], 0);
-      end;
-      // With the above settings, XWF will intelligently skip certain items due to,
-      // for example, first cluster not known etc. In the future, if we need to
-      // change it to do all items regardless, we can change the result
-      // of this function to 0 and then uncomment the "for loop" code below.
-      // Then XWF will call XT_ProcessItem for every item in the evidence object
-      // even if the file item is total nonsensical data.
-      {
-      for i := 0 to itemcount -1 do
-      begin
-        XT_ProcessItem(i, nil);
-      end;
-      }
-    end;
-end;
-
-// Takes the stringlist of file categories and works out how many times each one appears
-// using hashlists. Returns true on success.  False on failure.
-function ComputeMetrics(slFileCategories : TStringList) : boolean; stdcall; export;
-var
-  j, index  : integer;
-  Hash      : ShortString;
-  Data      : PData;
-begin
-  // MD5 is the fastest and perfectly fine for this task.
-  result := false;
-  for j := 0 to slFileCategories.Count - 1 do
-  begin
-    Hash  := MD5Print(MD5String(slFileCategories.Strings[j]));
-    Index := HashList.FindIndexOf(Hash);
-    if Index = -1 then
-    begin
-      New(Data);
-      Data^.FName  := slFileCategories.Strings[j];
-      Data^.FCount := 1;
-      HashList.Add(Hash, Data);
-    end
-    else
-      Inc(TData(HashList[Index]^).FCount);
-  end;
-  result := true;
-end;
-
-// finish the output and save to the HTML footers. Returns true on success. False otherwise
-function BuildCaseTypeSummary(HL : TFPHashlist) : boolean; stdcall; export;
-const
-  Buflen=256;
-  PostFixFilename = '-CaseSummary.html';
-var
-  k : integer;
-  Buf, outputpathmessage : array[0..Buflen-1] of WideChar;
-  OutputFolder : string;
-begin
-  result       := false;
-  OutputFolder := IncludeTrailingPathDelimiter(GetUserDir + 'Documents');
-
-  for k := 0 to HL.Count - 1 do
-  begin
-    slCaseTypesSummary.Add('<tr><td>'+TData(HL.Items[k]^).FName + '</td><td>    ' + IntToStr(TData(HL.Items[k]^).FCount)+'</td></tr>');
-  end;
-  slCaseTypesSummary.Add('</table>');
-  slCaseTypesSummary.Add('<p>'+ IntToStr(itemcount) + ' items exist in the case overall (including ' + IntToStr(FolderCount) + ' folders). Of those, it was possible to report on '+ IntToStr(ItemsReported) + ' items. ' + IntToStr(itemcount-ItemsReported) + ' illegible, omitted, or zero-byte items were not reported.</p>');
-
-  slCaseTypesSummary.Add('<p>'+ IntToStr(deleteditemcount) + ' items have a deleted status of some kind and may not be legible. </p>');
-
-  slCaseTypesSummary.Add('<p>'+ IntToStr(TotalDataInBytes) + ' total bytes of data comprise the files reported on (' + FormatByteSize(TotalDataInBytes)+ '). This figure can exceed the size of the original evidence ' +
-                         'due to extracted objects, decompression, the inclusion of free space fragments etc. Equally, the figure can be much lower because the figure represents data belonging to file items, not overall disk size which may not all have been allocated to a filesystem.</p>');
-
-  slCaseTypesSummary.Add('<p><strong>Legend</strong> (further information can be found at http://www.x-ways.com/winhex/manual.pdf under section "Type Status" and "Category"):</p>');
-  slCaseTypesSummary.Add('<ul>');
-  slCaseTypesSummary.Add('<li>"Errors" : X-Ways Forensics was unable to process or lookup any information about a file item.</li>');
-  slCaseTypesSummary.Add('<li>"Confirmed" : If the signature matches the extension according to the database, the status is "confirmed". </li>' +
-                         '<li>"Not Confirmed" : If the extension is referenced in the database, yet the signature actually found in the file is unknown, the status is "not confirmed". </li>' +
-                         '<li>"Mismatch Detected" If the signature matches a certain file type in the database, however the extension matches a different file type, the status is "mismatch detected".</li>');
-  slCaseTypesSummary.Add('</ul>');
-  slCaseTypesSummary.Add('<p><table border="1">');
-  slCaseTypesSummary.Add('<tr><td>Errors : </td><td>'              + IntToStr(infoflag_Error)          + '</td></tr>');
-  slCaseTypesSummary.Add('<tr><td>Confirmed : </td><td> '          + IntToStr(infoflag_Confirmed)      + '</td></tr>');
-  slCaseTypesSummary.Add('<tr><td>Not Confirmed : </td><td> '      + IntToStr(infoflag_NotConfirmed)   + '</td></tr>');
-  slCaseTypesSummary.Add('<tr><td>Mismatch detected : </td><td> '  + IntToStr(infoflag_MisMatch)       + '</td></tr>');
-  slCaseTypesSummary.Add('</p></table>');
-  slCaseTypesSummary.Add('</body>');
-
-  lstrcpyw(Buf, 'Saving results and freeing resources...');
-  XWF_OutputMessage(@Buf[0], 0);
-
-  try
-    slCaseTypesSummary.SaveToFile(OutputFolder + pBufEvdName + PostFixFilename);
-    outputpathmessage := 'Result saved to : ' + OutputFolder + pBufEvdName + PostFixFilename;
-    lstrcpyw(Buf, @outputpathmessage);
-    XWF_OutputMessage(@Buf[0], 0);
-  finally
-    result := true;
-  end;
-end;
 
 // Called after all items in the evidence objects have been itterated.
 // Returns -1 on failure. 0 on success.
@@ -534,7 +671,8 @@ function XT_Finalize(hVolume, hEvidence : THandle; nOpType : DWord; lpReserved :
 const
   Buflen=256;
 var
-  successMetrics, successCaseSummary : boolean;
+  successMetrics     : Boolean = Default(Boolean);
+  successCaseSummary : Boolean = Default(Boolean);
   Buf : array[0..Buflen-1] of WideChar;
 
 begin
@@ -593,7 +731,8 @@ exports
   // The following may not be exported in future versions
   TimeStampIt,
   FormatByteSize,
-  ComputeMetrics;
+  ComputeMetrics,
+  GetOutputLocation;
 begin
 
 end.

@@ -23,21 +23,27 @@
     </PublishOptions>
     <RunParams>
       <local>
-        <HostApplicationFilename Value="C:\Program Files\X-Ways Forensics\xwb64.exe"/>
+        <HostApplicationFilename Value="C:\Program Files\X-Ways Forensics\xwforensics64.exe"/>
       </local>
       <FormatVersion Value="2"/>
       <Modes Count="1">
         <Mode0 Name="default">
           <local>
-            <HostApplicationFilename Value="C:\Program Files\X-Ways Forensics\xwb64.exe"/>
+            <HostApplicationFilename Value="C:\Program Files\X-Ways Forensics\xwforensics64.exe"/>
           </local>
         </Mode0>
       </Modes>
     </RunParams>
+    <RequiredPackages Count="1">
+      <Item1>
+        <PackageName Value="LazUtils"/>
+      </Item1>
+    </RequiredPackages>
     <Units Count="1">
       <Unit0>
         <Filename Value="xtxwfcasesummarygenerator.lpr"/>
         <IsPartOfProject Value="True"/>
+        <UnitName Value="XT_XWF_CaseSummaryGenerator"/>
       </Unit0>
     </Units>
   </ProjectOptions>
@@ -45,7 +51,7 @@
     <Version Value="11"/>
     <PathDelim Value="\"/>
     <Target>
-      <Filename Value="xt_xwf-casesummarygenerator"/>
+      <Filename Value="XT_XWF_CaseSummaryGenerator"/>
     </Target>
     <SearchPaths>
       <IncludeFiles Value="$(ProjOutDir)"/>
